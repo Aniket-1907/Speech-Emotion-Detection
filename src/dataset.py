@@ -1,9 +1,11 @@
+"""PyTorch Dataset for manifest records."""
 import random
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from .features import extract_feature
 
-class RAVDESSDataset(Dataset):
+class AudioEmotionDataset(Dataset):
     def __init__(self, records, label_to_id, augment=False):
         self.records = records
         self.label_to_id = label_to_id
@@ -17,20 +19,20 @@ class RAVDESSDataset(Dataset):
         spec = extract_feature(record.path)
 
         if self.augment:
-            # SpecAugment-style masking.
             spec = spec.copy()
-
-            if random.random() < 0.5:
-                width = random.randint(5, min(20, spec.shape[1]))
+            # Simple SpecAugment masks on the time and frequency axes.
+            if random.random() < 0.5 and spec.shape[1] > 5:
+                width = random.randint(1, min(16, spec.shape[1] - 1))
                 start = random.randint(0, spec.shape[1] - width)
-                spec[:, start:start + width] = 0
-
-            if random.random() < 0.5:
-                height = random.randint(3, min(12, spec.shape[0]))
+                spec[:, start:start + width] = 0.0
+            if random.random() < 0.5 and spec.shape[0] > 3:
+                height = random.randint(1, min(10, spec.shape[0] - 1))
                 start = random.randint(0, spec.shape[0] - height)
-                spec[start:start + height, :] = 0
+                spec[start:start + height, :] = 0.0
 
-        x = torch.from_numpy(spec).unsqueeze(0)
-        y = self.label_to_id[record.emotion]
+        if record.emotion not in self.label_to_id:
+            raise ValueError(f"Unknown label '{record.emotion}' for {record.path}")
 
-        return x, torch.tensor(y, dtype=torch.long)
+        x = torch.from_numpy(np.asarray(spec, dtype=np.float32)).unsqueeze(0)
+        y = torch.tensor(self.label_to_id[record.emotion], dtype=torch.long)
+        return x, y

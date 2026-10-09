@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Speech Emotion Lab</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Speech Emotion Lab home">
+        <span class="brand-mark">◉</span>
+        <span>Speech Emotion <b>Lab</b></span>
+      </a>
+      <div class="status"><span class="status-dot"></span><span id="connectionText">API connection not checked</span></div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div class="eyebrow">LOCAL MODEL PLAYGROUND</div>
+        <h1>Hear the feeling<br><span>behind the voice.</span></h1>
+        <p>Upload a voice recording or record a sample. Your local CNN will analyze the audio and estimate the emotion it recognizes.</p>
+      </section>
+
+      <section class="workspace">
+        <div class="panel input-panel">
+          <div class="panel-heading">
+            <div>
+              <div class="step-label">STEP 01</div>
+              <h2>Add an audio sample</h2>
+            </div>
+            <span class="mic-icon">♫</span>
+          </div>
+
+          <label class="dropzone" id="dropzone" for="audioInput">
+            <input id="audioInput" type="file" accept="audio/*,.wav,.mp3,.ogg,.webm,.m4a">
+            <span class="upload-icon">↑</span>
+            <strong>Drop your audio here</strong>
+            <span class="muted">or <u>browse files</u></span>
+            <small>WAV recommended · Short speech samples work best</small>
+          </label>
+
+          <div class="selected-file hidden" id="selectedFile">
+            <div class="file-icon">♫</div>
+            <div class="file-details">
+              <strong id="fileName">audio.wav</strong>
+              <span id="fileMeta">Ready to analyze</span>
+            </div>
+            <button class="icon-button" id="removeFile" type="button" aria-label="Remove selected file">×</button>
+          </div>
+
+          <div class="divider"><span>OR RECORD LIVE</span></div>
+          <div class="record-box">
+            <button class="record-button" id="recordButton" type="button"><span class="record-dot"></span><span id="recordButtonText">Start recording</span></button>
+            <span id="recordHint" class="muted">Allow microphone access when prompted.</span>
+          </div>
+          <audio id="audioPreview" class="audio-preview hidden" controls></audio>
+
+          <div class="settings">
+            <label for="apiUrl">API base URL</label>
+            <input id="apiUrl" type="url" value="http://127.0.0.1:8000" spellcheck="false">
+            <button id="checkApi" class="text-button" type="button">Check API ↗</button>
+          </div>
+          <button class="primary-button" id="analyzeButton" type="button" disabled>
+            <span id="analyzeButtonText">Analyze emotion</span><span>→</span>
+          </button>
+          <p class="privacy-note">Local testing UI. Audio is sent to the API URL above; this page does not upload it to a third-party service.</p>
+        </div>
+
+        <div class="panel result-panel">
+          <div class="panel-heading">
+            <div>
+              <div class="step-label">STEP 02</div>
+              <h2>Emotion analysis</h2>
+            </div>
+            <span class="result-badge" id="resultBadge">WAITING</span>
+          </div>
+
+          <div class="empty-state" id="emptyState">
+            <div class="wave-art" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <h3>Your results will appear here</h3>
+            <p>Add a recording, then select <b>Analyze emotion</b> to see the model's prediction and scores.</p>
+          </div>
+
+          <div id="results" class="hidden">
+            <div class="prediction-card">
+              <div class="prediction-label">PREDICTED EMOTION</div>
+              <div class="emotion-emoji" id="emotionEmoji">◉</div>
+              <h3 id="predictedEmotion">—</h3>
+              <p id="predictionSubtext">Model prediction</p>
+            </div>
+            <div class="scores-header"><h3>Emotion scores</h3><span>Model output</span></div>
+            <div id="scoreList" class="score-list"></div>
+            <div class="result-footnote">Scores are model outputs, not necessarily calibrated probabilities or certainty.</div>
+          </div>
+
+          <div id="errorBox" class="error-box hidden" role="alert"></div>
+        </div>
+      </section>
+      <footer><span>Speech Emotion Lab</span><span>Built for local model testing</span></footer>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

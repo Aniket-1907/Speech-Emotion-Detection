@@ -1,84 +1,79 @@
-from pathlib import Path
+"""Generic manifest loader; no dataset-specific filename parsing here."""
+import csv
 from dataclasses import dataclass
-import random
+from pathlib import Path
 
-EMOTIONS = {
-    1: "neutral",
-    2: "calm",
-    3: "happy",
-    4: "sad",
-    5: "angry",
-    6: "fearful",
-    7: "disgust",
-    8: "surprised",
-}
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MANIFEST = PROJECT_ROOT / "data" / "manifest.csv"
 
 @dataclass(frozen=True)
-class RAVDESSRecord:
+class Record:
     path: str
-    modality: int
-    channel: int
-    emotion_id: int
     emotion: str
-    intensity: int
-    statement: int
-    repetition: int
-    actor: int
+    source: str
+    group: str
+    record_id: str = ""
 
-def parse_filename(path: Path) -> RAVDESSRecord:
-    parts = path.stem.split("-")
-    if len(parts) != 7:
-        raise ValueError(f"Unexpected RAVDESS filename: {path.name}")
+def resolve_project_path(value):
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
-    modality, channel, emotion, intensity, statement, repetition, actor = map(int, parts)
-
-    if emotion not in EMOTIONS:
-        raise ValueError(f"Unknown emotion {emotion}: {path.name}")
-
-    return RAVDESSRecord(
-        path=str(path),
-        modality=modality,
-        channel=channel,
-        emotion_id=emotion,
-        emotion=EMOTIONS[emotion],
-        intensity=intensity,
-        statement=statement,
-        repetition=repetition,
-        actor=actor,
-    )
-
-def load_records(data_dir: str):
-    data_path = Path(data_dir)
-    records = []
-
-    for wav in sorted(data_path.rglob("*.wav")):
-        try:
-            record = parse_filename(wav)
-        except ValueError:
-            continue
-
-        # Audio-only speech:
-        # modality 03 = audio-only
-        # channel 01 = speech
-        if record.modality == 3 and record.channel == 1:
-            records.append(record)
-
-    if not records:
-        raise RuntimeError(
-            f"No RAVDESS audio-only speech files found under {data_dir}. "
-            "Expected files beginning with 03-01-."
+def load_records(manifest_path=None):
+    manifest = resolve_project_path(manifest_path) if manifest_path else DEFAULT_MANIFEST
+    if not manifest.is_file():
+        raise FileNotFoundError(
+            f"Manifest not found: {manifest}\n"
+            "Run `python -m src.check_dataset` from the project root first."
         )
 
+    required = {"id", "emotion", "file", "dataset", "group"}
+    records, missing, invalid = [], [], []
+
+    with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError(f"Manifest has no header: {manifest}")
+        absent = required - set(reader.fieldnames)
+        if absent:
+            raise ValueError(f"Manifest is missing columns: {sorted(absent)}")
+
+        for line_no, row in enumerate(reader, start=2):
+            try:
+                record_id = str(row["id"]).strip()
+                emotion = str(row["emotion"]).strip().lower()
+                file_value = str(row["file"]).strip()
+                source = str(row["dataset"]).strip() or "unknown"
+                group = str(row["group"]).strip()
+                if not all((record_id, emotion, file_value, group)):
+                    raise ValueError("empty required field")
+
+                audio_path = resolve_project_path(file_value)
+                if not audio_path.is_file():
+                    missing.append((line_no, file_value))
+                    continue
+
+                records.append(Record(str(audio_path), emotion, source, group, record_id))
+            except Exception as exc:
+                invalid.append((line_no, str(exc)))
+
+    if missing:
+        print(f"Warning: {len(missing)} audio path(s) from the manifest were not found.")
+        for line, path in missing[:10]:
+            print(f"  CSV line {line}: {path}")
+        if len(missing) > 10:
+            print("  ...")
+    if invalid:
+        print(f"Warning: {len(invalid)} invalid manifest row(s) skipped.")
+        for line, message in invalid[:10]:
+            print(f"  CSV line {line}: {message}")
+
+    # Deduplicate repeated paths so the same recording is not counted twice.
+    unique = {}
+    for record in records:
+        unique.setdefault(Path(record.path).resolve().as_posix().casefold(), record)
+    records = list(unique.values())
+    if not records:
+        raise RuntimeError(f"No usable audio records found in {manifest}")
+
+    print(f"Loaded {len(records)} audio records from {manifest}")
     return records
-
-def split_by_actor(records):
-    # Speaker-independent split.
-    train_actors = set(range(1, 17))
-    val_actors = set(range(17, 21))
-    test_actors = set(range(21, 25))
-
-    train = [r for r in records if r.actor in train_actors]
-    val = [r for r in records if r.actor in val_actors]
-    test = [r for r in records if r.actor in test_actors]
-
-    return train, val, test

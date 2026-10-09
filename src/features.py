@@ -1,49 +1,49 @@
-import numpy as np
+"""Audio loading and log-Mel feature extraction."""
 import librosa
+import numpy as np
 
 SAMPLE_RATE = 16000
-DURATION = 3.0
-NUM_SAMPLES = int(SAMPLE_RATE * DURATION)
+DURATION_SECONDS = 4.0
+NUM_SAMPLES = int(SAMPLE_RATE * DURATION_SECONDS)
+N_MELS = 64
 
-def load_audio(path, sr=SAMPLE_RATE):
-    audio, _ = librosa.load(path, sr=sr, mono=True)
+def load_audio(path, sample_rate=SAMPLE_RATE, duration=DURATION_SECONDS):
+    audio, _ = librosa.load(path, sr=sample_rate, mono=True)
+    if audio.size == 0:
+        raise ValueError(f"Audio file is empty: {path}")
 
-    # Normalize amplitude.
-    peak = np.max(np.abs(audio))
-    if peak > 0:
-        audio = audio / peak
+    # Remove DC offset and normalize peak amplitude without changing labels.
+    audio = audio.astype(np.float32)
+    audio -= float(np.mean(audio))
+    peak = float(np.max(np.abs(audio)))
+    if peak > 1e-8:
+        audio /= peak
 
-    if len(audio) < NUM_SAMPLES:
-        audio = np.pad(audio, (0, NUM_SAMPLES - len(audio)))
-    else:
-        # Center crop for deterministic inference.
-        start = (len(audio) - NUM_SAMPLES) // 2
-        audio = audio[start:start + NUM_SAMPLES]
+    target_len = int(sample_rate * duration)
+    if len(audio) < target_len:
+        audio = np.pad(audio, (0, target_len - len(audio)))
+    elif len(audio) > target_len:
+        # Fixed-length baseline: center crop. Whole-recording inference can be
+        # added later for longer real-world recordings.
+        start = (len(audio) - target_len) // 2
+        audio = audio[start:start + target_len]
+    return audio
 
-    return audio.astype(np.float32)
-
-def audio_to_logmel(audio, sr=SAMPLE_RATE, n_mels=64):
+def audio_to_logmel(audio, sample_rate=SAMPLE_RATE, n_mels=N_MELS):
     mel = librosa.feature.melspectrogram(
         y=audio,
-        sr=sr,
+        sr=sample_rate,
         n_fft=1024,
         hop_length=256,
         n_mels=n_mels,
         fmin=20,
-        fmax=sr // 2,
+        fmax=sample_rate // 2,
         power=2.0,
     )
-
     logmel = librosa.power_to_db(mel, ref=np.max)
-
-    # Per-sample standardization.
-    mean = logmel.mean()
-    std = logmel.std() + 1e-6
-    logmel = (logmel - mean) / std
-
-    return logmel.astype(np.float32)
+    mean = float(logmel.mean())
+    std = float(logmel.std())
+    return ((logmel - mean) / (std + 1e-6)).astype(np.float32)
 
 def extract_feature(path):
-    audio = load_audio(path)
-    spec = audio_to_logmel(audio)
-    return spec
+    return audio_to_logmel(load_audio(path))

@@ -1,62 +1,87 @@
+"""Minimal FastAPI endpoint for audio emotion prediction."""
 from pathlib import Path
 import tempfile
-import torch
+
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import torch
+from fastapi import FastAPI, File, HTTPException, UploadFile
 
-from .model import EmotionCNN
+from .data import PROJECT_ROOT
 from .features import extract_feature
+from .model import EmotionCNN
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="RAVDESS Speech Emotion API")
+
+
+origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://127.0.0.1:5500,http://localhost:5500"
+    ).split(",")
+    if origin.strip()
+]
+
+
+app = FastAPI(title="Speech Emotion Detection API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CHECKPOINT_PATH = Path("artifacts/best_model.pt")
+CHECKPOINT_PATH = PROJECT_ROOT / "artifacts" / "best_model.pt"
+model = None
+labels = []
 
-if not CHECKPOINT_PATH.exists():
-    raise RuntimeError(
-        "Model checkpoint not found. Train the model first with src/train.py."
-    )
-
-checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
-LABELS = checkpoint["labels"]
-
-MODEL = EmotionCNN(num_classes=len(LABELS)).to(DEVICE)
-MODEL.load_state_dict(checkpoint["model_state"])
-MODEL.eval()
+@app.on_event("startup")
+def load_model():
+    global model, labels
+    if not CHECKPOINT_PATH.is_file():
+        # Let the API start so its health endpoint can explain missing training.
+        return
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
+    labels = checkpoint["labels"]
+    model = EmotionCNN(num_classes=len(labels)).to(DEVICE)
+    model.load_state_dict(checkpoint["model_state"])
+    model.eval()
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "device": DEVICE}
+    return {"status": "ok", "model_loaded": model is not None}
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model checkpoint not found; train first.")
     suffix = Path(file.filename or "audio.wav").suffix.lower()
+    if suffix not in {".wav", ".flac", ".mp3", ".ogg", ".m4a"}:
+        raise HTTPException(status_code=400, detail="Unsupported audio format.")
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    if suffix not in {".wav", ".mp3", ".flac", ".ogg", ".m4a"}:
-        raise HTTPException(400, "Unsupported audio format.")
-
-    data = await file.read()
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp:
-        temp.write(data)
-        temp_path = temp.name
-
+    temp_path = None
     try:
-        spec = extract_feature(temp_path)
-        x = torch.from_numpy(spec).unsqueeze(0).unsqueeze(0).to(DEVICE)
-
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp:
+            temp.write(payload)
+            temp_path = Path(temp.name)
+        feature = extract_feature(str(temp_path))
+        x = torch.from_numpy(feature).unsqueeze(0).unsqueeze(0).to(DEVICE)
         with torch.no_grad():
-            probabilities = torch.softmax(MODEL(x), dim=1)[0].cpu().numpy()
-
-        order = np.argsort(probabilities)[::-1]
-
+            probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
+        order = np.argsort(probs)[::-1]
         return {
-            "emotion": LABELS[int(order[0])],
-            "confidence": float(probabilities[order[0]]),
-            "probabilities": {
-                LABELS[int(i)]: float(probabilities[i])
-                for i in order
-            }
+            "predicted_emotion": labels[int(order[0])],
+            "softmax_score_not_calibrated_confidence": float(probs[int(order[0])]),
+            "probabilities": {labels[int(i)]: float(probs[int(i)]) for i in order},
         }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not process audio: {exc}")
     finally:
-        Path(temp_path).unlink(missing_ok=True)
+        if temp_path and temp_path.exists():
+            temp_path.unlink()
