@@ -12,3 +12,4 @@ joblib
 fastapi
 uvicorn
 python-multipart
+imageio-ffmpeg

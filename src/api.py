@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
+import os
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
@@ -10,6 +11,9 @@ from .data import PROJECT_ROOT
 from .features import extract_feature
 from .model import EmotionCNN
 from fastapi.middleware.cors import CORSMiddleware
+
+import subprocess
+import imageio_ffmpeg
 
 
 
@@ -57,31 +61,111 @@ def health():
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if model is None:
-        raise HTTPException(status_code=503, detail="Model checkpoint not found; train first.")
-    suffix = Path(file.filename or "audio.wav").suffix.lower()
-    if suffix not in {".wav", ".flac", ".mp3", ".ogg", ".m4a"}:
-        raise HTTPException(status_code=400, detail="Unsupported audio format.")
-    payload = await file.read()
-    if not payload:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        raise HTTPException(
+            status_code=503,
+            detail="Model checkpoint not found; train first."
+        )
 
-    temp_path = None
+    supported_formats = {
+        ".wav", ".flac", ".mp3", ".ogg", ".m4a",
+        ".webm", ".mp4", ".mpeg", ".mpga"
+    }
+
+    suffix = Path(file.filename or "audio.wav").suffix.lower()
+
+    if suffix not in supported_formats:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported audio format: {suffix}"
+        )
+
+    payload = await file.read()
+
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty."
+        )
+
+    source_path = None
+    wav_path = None
+
     try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp:
+        # Save the uploaded audio temporarily.
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=False
+        ) as temp:
             temp.write(payload)
-            temp_path = Path(temp.name)
-        feature = extract_feature(str(temp_path))
+            source_path = Path(temp.name)
+
+        # Create a temporary WAV file for feature extraction.
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav", delete=False
+        ) as temp:
+            wav_path = Path(temp.name)
+
+        # Convert browser audio (WebM/Opus, etc.) into WAV.
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i", str(source_path),
+                "-vn",
+                "-ac", "1",
+                "-ar", "22050",
+                "-c:a", "pcm_s16le",
+                str(wav_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not decode audio. Try uploading a valid WAV file."
+            )
+
+        # Use your existing feature extraction pipeline.
+        feature = extract_feature(str(wav_path))
+
         x = torch.from_numpy(feature).unsqueeze(0).unsqueeze(0).to(DEVICE)
+
         with torch.no_grad():
             probs = torch.softmax(model(x), dim=1)[0].cpu().numpy()
+
         order = np.argsort(probs)[::-1]
+
         return {
             "predicted_emotion": labels[int(order[0])],
-            "softmax_score_not_calibrated_confidence": float(probs[int(order[0])]),
-            "probabilities": {labels[int(i)]: float(probs[int(i)]) for i in order},
+            "softmax_score_not_calibrated_confidence": float(
+                probs[int(order[0])]
+            ),
+            "probabilities": {
+                labels[int(i)]: float(probs[int(i)])
+                for i in order
+            },
         }
+
+    except HTTPException:
+        raise
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=400,
+            detail="Audio conversion timed out. Try a shorter recording."
+        )
+
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not process audio: {exc}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not process audio: {exc}"
+        )
+
     finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink()
+        for path in (source_path, wav_path):
+            if path and path.exists():
+                path.unlink()
